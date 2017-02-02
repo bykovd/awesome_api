@@ -1,0 +1,508 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "AweSomeApi with Autoscaling",
+  "Mappings": {
+    "RegionMap": {
+            "eu-west-1"     : { "AMI": "ami-b9b394ca" },
+            "eu-central-1"  : { "AMI": "ami-26c43149" },
+            "us-east-1" : { "AMI" : "ami-5ac2cd4d" }
+    },
+    "Env": {
+     "default": {
+        "NameTagPrefix"   : "[TEST]",
+        "IAMRoleNAME" : "APIHOST"
+		}
+    }
+	
+
+  },
+    "Parameters": {
+    
+	"MyEnv": {
+      "Description": "Environment. Currently supported: default",
+      "AllowedValues" : ["default"],
+      "Default": "default",
+      "ConstraintDescription": "MyEnv parameter only supports the following values: default",
+      "Type": "String"
+    },
+    "InstanceType": {
+      "Description": "Instanse type.",
+      "Default": "t2.nano",
+      "Type": "String"
+    },
+	
+	"MyVPC": {
+      "Description": "Chose VpcId",
+      "Default": "vpc-876acae2",
+      "Type" : "AWS::EC2::VPC::Id"
+    },
+		
+	"PublicSubnet": {
+      "Description": "Chose Public Subnet",
+      "Default": "subnet-0f409e56",
+      "Type" : "AWS::EC2::Subnet::Id"
+    },
+	
+	"PrivateSubnet": {
+      "Description": "Chose Private Subnet. It should be in a different availability zone then public subnet",
+      "Default": "subnet-f83e959c",
+      "Type" : "AWS::EC2::Subnet::Id"
+    },
+	
+    "LBMinSize": {
+      "Description": "Minimum number of instances in LoadBalancer",
+      "Default": "1",
+      "Type": "String"
+    },
+	
+	"KeyName" : {
+      "Description" : "The EC2 Key Pair to allow SSH access to the instance",
+      "Type" : "AWS::EC2::KeyPair::KeyName",
+	  "Default": "EU-Ireland-MainVPC"
+    },
+	
+	
+	"DBName": {
+      "Default": "pgdb",
+      "Description" : "Default database name",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "8",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+ 
+    "DBUsername": {
+      "Default": "root",
+      "Description" : "The database admin account username",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "16",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+ 
+    "DBPassword": {
+      "Default": "root1234",
+      "NoEcho": "true",
+      "Description" : "The database admin account password",
+      "Type": "String",
+      "MinLength": "8"
+    },
+ 
+	"ApiDbUser": {
+      "Default": "apidbuser",
+      "Description" : "The database admin account username",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "16",
+      "ConstraintDescription" : "must begin with a letter and contain only alphanumeric characters."
+    },
+ 
+    "ApiDbUserPassword": {
+      "Default": "ApiDbUser1234",
+      "NoEcho": "true",
+      "Description" : "The database admin account password",
+      "Type": "String",
+      "MinLength": "8"
+    },
+ 
+ 
+ 
+    "DBClass" : {
+      "Default" : "db.t2.micro",
+      "Description" : "Database instance class",
+      "Type" : "String",
+      "AllowedValues" : [ "db.t2.micro", "db.m1.small", "db.m1.large", "db.m1.xlarge", "db.m2.xlarge" ],
+      "ConstraintDescription" : "must select a valid database instance type."
+    },
+ 
+ 
+    "DBAllocatedStorage" : {
+      "Default": "5",
+      "Description" : "The size of the database (Gb)",
+      "Type": "Number",
+      "MinValue": "5",
+      "MaxValue": "6144",
+      "ConstraintDescription" : "must be between 5+"
+    },
+    
+	"CodeDeployApplicationName": {
+      "Default": "AwesomeApiCodeDeploy",
+      "Description": "CodeDeploy Application Name",
+      "Type": "String"
+    }
+  },
+  "Outputs": {
+    "LoadBalancerDNS": {
+      "Description": "The DNSName of the load balancer",
+      "Value" : { "Fn::GetAtt" : [ "ELB", "DNSName" ]}
+    },
+    "RedisEndpoint": {
+      "Description": "Redis RedisEndpoint",
+      "Value" : {"Fn::GetAtt": [ "ElastiCache", "RedisEndpoint.Address"]}
+    },
+	"JDBCConnectionString": {
+      "Description" : "Postgres DB connection string",
+      "Value" : { "Fn::Join": [ "", [ { "Fn::GetAtt": [ "pgDB", "Endpoint.Address" ] },
+                                      ":",
+                                      { "Fn::GetAtt": [ "pgDB", "Endpoint.Port" ] } 
+									]]}
+    }
+  },
+  
+  
+  "Resources": {
+   
+
+  "IAMRole": {
+	"Type": "AWS::IAM::Role",
+	"Properties": {
+    "ManagedPolicyArns": [ "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess" ],
+    "AssumeRolePolicyDocument": {
+		"Version" : "2012-10-17",
+               "Statement": [ {
+                  "Effect": "Allow",
+                  "Principal": {
+                     "Service": [ "ec2.amazonaws.com" ]
+                  },
+                  "Action": [ "sts:AssumeRole" ]
+               } ]
+	},
+
+    "RoleName": {"Fn::FindInMap": [ "Env", { "Ref": "MyEnv" }, "IAMRoleNAME" ]}
+		}
+	},
+	
+	"ELB": {
+      "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties": {
+        "LoadBalancerName": {
+          "Fn::Join": [
+            "-",
+            [
+              { "Ref": "MyEnv" },
+              "awesomeapi","ELB"
+            ]
+          ]
+        },
+        "Listeners": [
+          {
+            "LoadBalancerPort": "80",
+            "InstancePort": "5000",
+            "Protocol": "HTTP",
+            "PolicyNames": [
+              "LBPolicy"
+            ]
+          }
+        ],
+        "HealthCheck": {
+          "Interval": "5",
+          "UnhealthyThreshold": "2",
+          "HealthyThreshold": "5",
+          "Target": "HTTP:5000/ticks",
+          "Timeout": "3"
+        },
+        "LBCookieStickinessPolicy": [
+          {
+            "PolicyName": "LBPolicy",
+            "CookieExpirationPeriod": "3600"
+          }
+        ],
+        "SecurityGroups"        : [{"Fn::GetAtt": [ "ELBSecurityGroup", "GroupId"]}],
+        "Subnets"               : [ { "Ref": "PublicSubnet" } ]
+      }
+    },
+	
+	"PostgresDBSG": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "PostgresDB acceess",
+        "VpcId"            : { "Ref": "MyVPC" },
+        "SecurityGroupIngress" : [{
+          "IpProtocol" : "tcp",
+          "FromPort"   : 5432,
+          "ToPort"     : 5432,
+          "SourceSecurityGroupId": {"Fn::GetAtt": [ "ApiHostSecurityGroup", "GroupId"]}
+        }],
+        "Tags": [{"Key": "Name","Value": "PostgresDBSecurityGroup"}]
+      }
+    },
+	   
+    "RedisSG": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Redis acceess",
+        "VpcId"            : { "Ref": "MyVPC" },
+        "SecurityGroupIngress" : [{
+          "IpProtocol" : "tcp",
+          "FromPort"   : 6379,
+          "ToPort"     : 6379,
+          "SourceSecurityGroupId": {"Fn::GetAtt": [ "ApiHostSecurityGroup", "GroupId"]}
+        }],
+        "Tags": [{"Key": "Name","Value": "Redis SecurityGroup"}]
+      }
+    }, 
+
+
+    "ApiHostSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+        "GroupDescription": "Elasticache Security Group",
+        "SecurityGroupIngress": [ 
+        { 
+        "IpProtocol": "tcp", 
+        "FromPort": "5000", 
+        "ToPort": "5000",
+        "SourceSecurityGroupId": {"Fn::GetAtt": [ "ELBSecurityGroup", "GroupId"]}
+        },
+        {
+        "IpProtocol": "tcp",
+        "CidrIp": "0.0.0.0/0",
+        "FromPort": "22",
+        "ToPort": "22"
+         }
+         ],
+        "VpcId": { "Ref": "MyVPC" },
+        "Tags": [{"Key": "Name","Value": "ApiHostSecurityGroup"}]
+    }
+    },
+    "ELBSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+        "GroupDescription": "ELB Security Group",
+        "SecurityGroupIngress": [ 
+        {
+         "IpProtocol": "tcp",
+         "CidrIp": "0.0.0.0/0",
+         "FromPort": "80",
+         "ToPort": "80"
+         }
+         ],
+        "VpcId": { "Ref": "MyVPC" },
+        "Tags": [{"Key": "Name","Value": "ELBSecurityGroup"}]
+      }
+     },
+    "ASGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "MaxSize"                 : "3",
+        "MinSize"                 : { "Ref": "LBMinSize" },
+        "DesiredCapacity"         : { "Ref": "LBMinSize" },
+        "Cooldown"                : "300",
+        "HealthCheckGracePeriod"  : "500",
+        "HealthCheckType"         : "EC2",
+        "VPCZoneIdentifier"       : [ { "Ref": "PublicSubnet" } ],
+        "LaunchConfigurationName" : { "Ref": "LaunchConf" },
+        "LoadBalancerNames"       : [ { "Ref": "ELB" } ],
+        "Tags": [
+          {
+            "Key"               : "VPC",
+            "Value"             : {"Fn::FindInMap": [ "Env", { "Ref": "MyEnv" }, "NameTagPrefix" ]},
+            "PropagateAtLaunch" : "true"
+          },
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ " ", [ { "Fn::FindInMap": [ "Env", { "Ref": "MyEnv" }, "NameTagPrefix" ] }, "awesomeapi" ] ] },
+            "PropagateAtLaunch": "true"
+          }
+        ]
+      }
+    },
+    "LaunchConf": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "AssociatePublicIpAddress": "True",
+        "InstanceType"            : { "Ref": "InstanceType"},
+        "SecurityGroups"          : [{"Fn::GetAtt": [ "ApiHostSecurityGroup", "GroupId"]}],
+        "ImageId"                 : { "Fn::FindInMap": [ "RegionMap", { "Ref": "AWS::Region" }, "AMI" ] },
+        "KeyName"                 : { "Ref": "KeyName" },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+              "VolumeSize": "8",
+              "DeleteOnTermination": "true"
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/bash \n",
+				"echo ",{"Fn::GetAtt": [ "ElastiCache", "RedisEndpoint.Address"]}, " > /opt/redis_endoint.txt \n",
+				"echo ",{"Fn::GetAtt": [ "pgDB", "Endpoint.Address"]}, " > /opt/pg_endoint.txt \n",
+				
+				"echo PG_DB=", { "Ref" : "DBName" }, " > /opt/evn_details.txt \n", 
+				"echo PG_ADMIN_PASSWORD=", { "Ref" : "DBPassword" }, " >> /opt/evn_details.txt \n", 
+				"echo PG_ADMIN_USER=", { "Ref" : "DBUsername" },         " >> /opt/evn_details.txt \n", 
+				"echo PG_ENDPOINT=", {"Fn::GetAtt": [ "pgDB", "Endpoint.Address"]},  " >> /opt/evn_details.txt \n", 
+				"echo API_DB_USER_PASSWORD=", { "Ref" : "ApiDbUserPassword" }, " >> /opt/evn_details.txt \n", 
+				"echo API_DB_USERNAME=", { "Ref" : "ApiDbUser" },         " >> /opt/evn_details.txt \n", 
+				
+				"sudo apt-get update \n",
+				"sudo apt-get -y install git-core \n",
+        "git clone https://github.com/bykovd/awesome_api.git /opt/bootstrap \n",
+				"/opt/bootstrap/awesome_api_shared_db.sh \n",
+       
+				"\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "CPUAlarmHigh": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "EvaluationPeriods": "1",
+        "Statistic": "Average",
+        "Threshold": "50",
+        "AlarmDescription": "Alarm if CPU too high or metric disappears indicating instance is down",
+        "Period": "60",
+        "AlarmActions": [
+          {
+            "Ref": "ScaleUpPolicy"
+          }
+        ],
+        "Namespace": "AWS/EC2",
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": {
+              "Ref": "ASGroup"
+            }
+          }
+        ],
+        "ComparisonOperator": "GreaterThanThreshold",
+        "MetricName": "CPUUtilization"
+      }
+    },
+    "ScaleUpPolicy": {
+      "Type": "AWS::AutoScaling::ScalingPolicy",
+      "Properties": {
+        "AutoScalingGroupName": 
+        {
+          "Ref": "ASGroup"
+        },
+        "AdjustmentType": "ChangeInCapacity",
+        "Cooldown": "300",
+        "ScalingAdjustment": "1"
+      }
+    },
+    "CPUAlarmLow": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "EvaluationPeriods": "1",
+        "Statistic": "Average",
+        "Threshold": "20",
+        "AlarmDescription": "Alarm if CPU < 20% for 30 minutes",
+        "Period": "1800",
+        "AlarmActions": [
+          {
+            "Ref": "ScaleDownPolicy"
+          }
+        ],
+        "Namespace": "AWS/EC2",
+        "Dimensions": [
+          {
+            "Name": "AutoScalingGroupName",
+            "Value": {
+              "Ref": "ASGroup"
+            }
+          }
+        ],
+        "ComparisonOperator": "LessThanThreshold",
+        "MetricName": "CPUUtilization"
+      }
+    },
+  
+    "ELCSubnetGroup" :{
+    "Type" : "AWS::ElastiCache::SubnetGroup",
+    "Properties" : {
+    "CacheSubnetGroupName" : "ELCSubnetGroupName01",
+    "Description" : "ELCSubnetGroupName",
+    "SubnetIds" : [{ "Ref": "PublicSubnet" }]
+      }
+    },
+
+    "ElastiCache": {
+      "Type": "AWS::ElastiCache::CacheCluster",
+      "Properties": {
+        "CacheSubnetGroupName": {
+          "Ref": "ELCSubnetGroup"
+        },
+        "VpcSecurityGroupIds": [{"Fn::GetAtt": [ "RedisSG", "GroupId"]}],
+        "CacheNodeType": "cache.t2.micro",
+        "Engine": "redis",
+        "NumCacheNodes": "1",
+        "ClusterName": "TestRedis",
+        "Port": "6379",
+        "PreferredMaintenanceWindow": "Sat:01:30-Sat:02:30"
+      }
+    },
+
+	"myDBParamGroup": {
+        "Type": "AWS::RDS::DBParameterGroup",
+        "Properties": {
+            "Description": "Database Parameter Group",
+            "Family": "postgres9.5"
+             }
+    },
+	
+	"myDBSubnetGroup" : {
+      "Type" : "AWS::RDS::DBSubnetGroup",
+      "Properties" : {
+         "DBSubnetGroupDescription" : "DB Private Subnet",
+         "SubnetIds" : [ 
+		 { "Ref": "PublicSubnet" },
+		 { "Ref": "PrivateSubnet" }
+		 ]
+      }
+    },
+	
+	"pgDB" : {
+      "Type" : "AWS::RDS::DBInstance",
+      "Properties" : {
+        "DBName" : { "Ref" : "DBName" },
+        "AllocatedStorage" : { "Ref" : "DBAllocatedStorage" },
+        "DBInstanceClass" : { "Ref" : "DBClass" },
+        "Engine" : "postgres",
+        "MasterUsername" : { "Ref" : "DBUsername" } ,
+        "MasterUserPassword" : { "Ref" : "DBPassword" },
+        "DBSubnetGroupName" : { "Ref" : "myDBSubnetGroup" },
+        "DBParameterGroupName" : {"Ref" : "myDBParamGroup" },
+        "VPCSecurityGroups" : [ { "Fn::GetAtt" : [ "PostgresDBSG", "GroupId" ] } ]
+      }
+    },
+
+
+    "DepGroup": {
+      "Type": "AWS::CodeDeploy::DeploymentGroup",
+      "Properties": {
+        "ApplicationName": { "Ref": "CodeDeployApplication" },
+        "AutoScalingGroups": [{ "Ref": "ASGroup" } ],
+        "ServiceRoleArn": { "Fn::Join": [ "", [ "arn:aws:iam::", { "Ref": "AWS::AccountId" }, ":role/CodeDeploy" ] ] }
+      }
+    },
+
+    "CodeDeployApplication" : {
+      "Type" : "AWS::CodeDeploy::Application",
+          "Properties" : {
+          "ApplicationName" : { "Ref": "CodeDeployApplicationName" }
+      } 
+     },
+
+    "ScaleDownPolicy": {
+      "Type": "AWS::AutoScaling::ScalingPolicy",
+      "Properties": {
+        "AutoScalingGroupName": {
+          "Ref": "ASGroup"
+        },
+        "AdjustmentType": "ChangeInCapacity",
+        "Cooldown": "300",
+        "ScalingAdjustment": "-1"
+      }
+    }
+  }
+}
